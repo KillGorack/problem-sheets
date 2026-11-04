@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Problem Sheets
+Comment=Problem-solving records with actions
+Exec=@APPDIR@/problem-sheets
+Icon=@ICON@
+Terminal=false
+Categories=Office;
+StartupWMClass=problem-sheets

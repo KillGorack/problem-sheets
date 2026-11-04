@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "problem-sheets"
+dynamic = ["version"]                      # from version.py, the single source
+description = "Problem-solving records with actions, kept in a local SQLite file"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["customtkinter>=6.0,<7", "Pillow>=11", "reportlab>=4"]
+# Tk itself is not on PyPI: Fedora needs  sudo dnf install python3-tkinter  once.
+
+[project.scripts]
+problem-sheets = "main:main"
+
+[tool.setuptools]
+# Flat modules (the app grew as scripts). Fine inside pipx's private environment.
+py-modules = ["main", "views", "db", "pdf_export", "dave_theme", "version"]
+packages = ["icons"]                       # dave_theme looks for icons/ next to itself
+
+[tool.setuptools.package-data]
+icons = ["*.png", "LICENSE"]               # icons/icon.png is the window icon
+
+[tool.setuptools.dynamic]
+version = { attr = "version.VERSION" }
