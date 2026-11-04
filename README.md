@@ -11,10 +11,11 @@ python3 main.py --theme light     # or dark (default; remembered; sun/moon butto
 ## Install with pipx (from the repo)
 ```
 sudo dnf install pipx python3-tkinter          # once; Tk is not on PyPI
-pipx install git+https://github.com/<you>/problem-sheets      # or: pipx install /path/to/ProblemSheets
+pipx install git+https://github.com/KillGorack/problem-sheets      # or: pipx install /path/to/ProblemSheets
 problem-sheets                                  # upgrade: pipx upgrade problem-sheets   remove: pipx uninstall problem-sheets
+problem-sheets --install-menu                   # optional: adds it to the applications menu (--remove-menu undoes it)
 ```
-pipx keeps the app in its own private environment, so nothing else on the system is touched; your data (`~/.local/share/problem-sheets`) is never removed. There is no applications-menu entry with this route; use the tarball (`packaging/build_linux.sh`) for that. Tested 2026-11-04 from a local folder into a scratch pipx home, in a brand-new home directory.
+pipx keeps the app in its own private environment, so nothing else on the system is touched; your data (`~/.local/share/problem-sheets`) is never removed. pipx only installs the command, so run `problem-sheets --install-menu` once to add the menu entry (run `--remove-menu` before `pipx uninstall`). The tarball (`packaging/build_linux.sh`) adds one by itself. Tested 2026-11-04 from a local folder into a scratch pipx home, in a brand-new home directory.
 
 ## Data
 - **Project:** the top-level subject (for example Logistics, Production). Every problem belongs to one. It is the first dropdown on the form, a filter on the Problems list (so a meeting can stay on one project), and the title of every exported PDF. You maintain the list in Settings.

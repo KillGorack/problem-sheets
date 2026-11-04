@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1 - 2026-11-04
+- `problem-sheets --install-menu` adds an applications-menu entry for pip/pipx installs (`--remove-menu` undoes it).
+- README: pipx install command with the repo address.
+
 ## 1.1.0 - 2026-11-04  (restyle)
 - "What is to be done" is now just "Actions" (list, dialog, PDF). The PDF no longer prints "PROBLEM SHEET".
 - Save PDF and Add pictures dialogs remember the last folder (separately).

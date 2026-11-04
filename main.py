@@ -238,6 +238,53 @@ def save_settings(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
+def _menu_paths(size: int) -> tuple[Path, Path]:
+    import os
+    data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return (data / "applications" / "problem-sheets.desktop",
+            data / "icons" / "hicolor" / f"{size}x{size}" / "apps" / "problem-sheets.png")
+
+
+def install_menu() -> int:
+    """Add (or refresh) the applications-menu entry for a pip/pipx install. Linux only, per user."""
+    import os
+    import shutil
+    import subprocess
+    from PIL import Image
+    if not sys.platform.startswith("linux"):
+        print("Menu entries are for Linux. On Windows use the MSI installer.")
+        return 1
+    exe = shutil.which("problem-sheets") or str(Path(sys.argv[0]).resolve())
+    with Image.open(app_icon()) as im:
+        size = im.width
+    desktop, icon = _menu_paths(size)
+    icon.parent.mkdir(parents=True, exist_ok=True)
+    desktop.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(app_icon(), icon)
+    desktop.write_text(
+        "[Desktop Entry]\nType=Application\n"
+        f"Name={APP_NAME}\nComment=Problem-solving records with actions\n"
+        f"Exec={exe}\nIcon={icon}\nTerminal=false\nCategories=Office;\nStartupWMClass=problem-sheets\n")
+    desktop.chmod(0o755)
+    if shutil.which("update-desktop-database"):
+        subprocess.run(["update-desktop-database", str(desktop.parent)], capture_output=True)
+    print(f"Menu entry added: {desktop}\nLaunches: {exe}")
+    return 0
+
+
+def remove_menu() -> int:
+    from PIL import Image
+    with Image.open(app_icon()) as im:
+        size = im.width
+    removed = False
+    for p in _menu_paths(size):
+        if p.exists():
+            p.unlink()
+            removed = True
+    print("Menu entry removed." if removed else "No menu entry was installed.")
+    return 0
+
+
 def selftest() -> int:
     """Check that a build is complete: resources, database, PDF, imaging. No display needed."""
     import tempfile
@@ -275,6 +322,8 @@ def selftest() -> int:
 def main() -> None:
     ap = argparse.ArgumentParser(description=f"{APP_NAME} {VERSION}")
     ap.add_argument("--selftest", action="store_true", help="check this install is complete, then exit")
+    ap.add_argument("--install-menu", action="store_true", help="add an applications-menu entry (Linux, per user)")
+    ap.add_argument("--remove-menu", action="store_true", help="remove that applications-menu entry")
     ap.add_argument("--version", action="version", version=f"{APP_NAME} {VERSION}")
     ap.add_argument("--theme", choices=MODES)
     ap.add_argument("--demo", action="store_true", help="use a separate demo database with sample data")
@@ -284,6 +333,10 @@ def main() -> None:
     a = ap.parse_args()
     if a.selftest:
         sys.exit(selftest())
+    if a.install_menu:
+        sys.exit(install_menu())
+    if a.remove_menu:
+        sys.exit(remove_menu())
 
     folder = db.data_dir()
     path = Path(a.db) if a.db else folder / ("demo.db" if a.demo else "problems.db")
