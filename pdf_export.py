@@ -95,19 +95,19 @@ def problem_sheet(path: str, p: dict, actions: list[dict], pictures: list | None
               _para("Root cause", h2), _para(p["root_cause"] or "Not yet determined.", base),
               _para("Actions", h2)]
 
-    head = [_para(t, label) for t in ("ACTIONS", "WHO", "DUE", "COMPLETION")]
-    rows = [head] + [[_para(a["description"], base), _para(a.get("owner") or "-", base),
-                      _para(a["due_date"] or "-", base), _para(a["status"], base)] for a in actions]
+    head = [_para(t, label) for t in ("#", "ACTIONS", "WHO", "DUE", "COMPLETION")]
+    rows = [head] + [[_para(str(n), base), _para(a["description"], base), _para(a.get("owner") or "-", base),
+                      _para(a["due_date"] or "-", base), _para(a["status"], base)] for n, a in enumerate(actions, start=1)]
     if len(rows) == 1:
-        rows.append([_para("No actions recorded.", base), "", "", ""])
-    t = Table(rows, colWidths=[width * .52, width * .20, width * .13, width * .15], repeatRows=1)
+        rows.append(["", _para("No actions recorded.", base), "", "", ""])
+    t = Table(rows, colWidths=[width * .05, width * .47, width * .20, width * .13, width * .15], repeatRows=1)
     style = [("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOX", (0, 0), (-1, -1), 0.6, colors.Color(.3, .3, .3)),
              ("LINEBELOW", (0, 0), (-1, -1), 0.3, colors.Color(.7, .7, .7)),
              ("BACKGROUND", (0, 0), (-1, 0), colors.Color(.85, .85, .85)),
              ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]
     for i, a in enumerate(actions, start=1):
         if db.is_overdue(a["due_date"], a["status"] != db.ACTION_DONE):
-            style.append(("TEXTCOLOR", (2, i), (2, i), colors.Color(.66, .12, .12)))
+            style.append(("TEXTCOLOR", (3, i), (3, i), colors.Color(.66, .12, .12)))
     t.setStyle(TableStyle(style))
     story.append(t)
 

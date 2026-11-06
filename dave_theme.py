@@ -1,5 +1,5 @@
 """
-Dave-Standard theme for CustomTkinter  —  v0.2
+Dave-Standard theme for CustomTkinter  —  v0.3
 ===============================================
 Personal look for side projects, taken from LULIM
 (002_Software_Projects\\Python\\LULIM): quiet floating panels, flat icon buttons,
@@ -767,19 +767,32 @@ def scroll_frame(master, **kw) -> ScrollFrame:
     return sf
 
 
-def section(master, title: str | None = None) -> Panel:
-    """A Panel with an optional bold title. Put content in `.body`."""
+def section(master, title: str | None = None, on_add: Callable | None = None, add_tip: str = "") -> Panel:
+    """A Panel with an optional bold title. Put content in `.body`.
+    on_add: puts a + icon button to the left of the title (it replaces an "Add" button below the content).
+    The header row is `.head` (add a hint beside the title there), the + is `.add_button`."""
     p = Panel(master)
-    if title:
+    p.head = p.add_button = None
+    if on_add:
+        p.head = ctk.CTkFrame(p, fg_color="transparent", height=0)
+        p.head.pack(anchor="w", padx=(8, 14), pady=(6, 0))
+        p.add_button = icon_button(p.head, "plus", on_add, add_tip)
+        p.add_button.pack(side="left", pady=(2, 0))   # the icon box sits 1px high against the label font
+        label(p.head, title or "", bold=True, height=0).pack(side="left", padx=(2, 0))
+    elif title:
         label(p, title, bold=True, height=0).pack(anchor="w", padx=14, pady=(10, 0))
     p.body = ctk.CTkFrame(p, fg_color="transparent", height=0)
     p.body.pack(fill="both", expand=True, padx=14, pady=(8, 12))
     return p
 
 
-def field(master, text: str, make: Callable, required: bool = False, hint: str | None = None):
-    """Label above a control, with a line below that is empty until an error (or hint) is set.
-    `make(parent)` builds the control. Returns (frame, control, set_error)."""
+def field(master, text: str, make: Callable, required: bool = False, hint: str | None = None,
+          reserve: bool = True):
+    """Label above a control, with a line below for an error (or hint). `make(parent)` builds the control.
+    Returns (frame, control, set_error).
+    reserve: keep that line's room even while it is empty, so an error replaces blank space instead of
+    growing the form (a fixed-size dialog would push its buttons out of the window). Pass False for a
+    field that can never show an error."""
     frame = ctk.CTkFrame(master, fg_color="transparent", height=0)
     row = ctk.CTkFrame(frame, fg_color="transparent", height=0)
     row.pack(anchor="w")
@@ -792,7 +805,7 @@ def field(master, text: str, make: Callable, required: bool = False, hint: str |
     err = label(frame, "", muted=True, size=FONT_SIZE - 2, height=0)
 
     def set_error(msg=None):
-        txt = msg or hint or ""
+        txt = msg or hint or ("\u00a0" if reserve else "")
         err.configure(text=txt, text_color=C["error" if msg else "muted"])
         if txt:
             err.pack(anchor="w", pady=(3, 0))
@@ -858,7 +871,10 @@ class DataTable(ctk.CTkFrame):
 
     columns: dicts {"key", "title", "weight"=1, "anchor"="w", "wrap"=px, "sortkey"=fn(row)->value,
              "nosort": True, "image": True, "size": 14 -> the value is "dot:#RRGGBB" (colored dot)
-             or an image file path (square thumbnail)}
+             or an image file path (square thumbnail),
+             "icon": "pencil", "click": fn(row_id), "skip": "first"|"last" -> a small clickable icon in
+             every row (edit, trash, move arrows; skip = none on the first / last row). The click
+             selects the row, then calls click(row_id).}
     rows:    dicts keyed by column key; "_id" identifies the record.
     Click a header to sort (again to reverse), click a row to select, double-click to open.
     color_fn(row, key) -> color token ("muted", "error"...) or None, for per-cell text color.
@@ -1007,7 +1023,28 @@ class DataTable(ctk.CTkFrame):
                 line.append(lab)
             self._lines.append(line)
             self._paint(r, "selected" if row["_id"] == self.selected else "normal")
+        self._row_icons()
         self.body.sync_later()
+
+    def _row_icons(self):
+        """Put the clickable icons of "icon" columns into the rows just drawn."""
+        from PIL import ImageTk
+        self._icon_photos = []
+        last = len(self._lines) - 1
+        for r, line in enumerate(self._lines):
+            for i, col in enumerate(self.columns):
+                name = col.get("icon")
+                if not name or (col.get("skip") == "first" and r == 0) or (col.get("skip") == "last" and r == last):
+                    continue
+                photo = ImageTk.PhotoImage(_tint(name, cur("muted")).resize((14, 14), Image.LANCZOS))
+                self._icon_photos.append(photo)
+                line[i].configure(image=photo, text="", cursor="hand2")
+                line[i].bind("<Button-1>", lambda _e, r=r, c=col["click"]: self._hit(r, c))
+
+    def _hit(self, r, click):
+        rid = self._order[r]["_id"]
+        self._click(r)
+        click(rid)
 
     def _hover(self, r, on):
         if r < len(self._order) and self._order[r]["_id"] != self.selected:
@@ -1076,4 +1113,171 @@ def dialog(master, title: str, message: str, buttons=("Cancel", "OK"), danger: b
             btn.configure(text_color=C["error"])
         btn.pack(side="left", padx=(6 if i else 0, 0))
     run_modal(win, master, 380)
+    return result["v"]
+
+
+# =============================================================================
+# v0.3 ADDITIONS (first used by Problem Sheets): date picker, one-line prompt
+# =============================================================================
+
+
+class DateEntry(ctk.CTkFrame):
+    """YYYY-MM-DD entry with a small calendar popup (calendar icon at the right).
+    Type a date or pick one. Same get / set / insert / delete as an entry."""
+
+    def __init__(self, master, placeholder: str = "YYYY-MM-DD", **kw):
+        super().__init__(master, fg_color="transparent", height=0, **kw)
+        self.columnconfigure(0, weight=1)
+        self.entry = entry(self, placeholder)
+        self.entry.grid(row=0, column=0, sticky="ew")
+        self.btn = icon_button(self, "calendar", self.open, "Pick a date", tone="muted", size=LIST_ICON_SIZE)
+        self.btn.configure(width=28, height=28)
+        self.btn.grid(row=0, column=1, padx=(4, 0))
+        self.pop = None
+
+    # entry-compatible
+    def get(self) -> str:
+        return self.entry.get()
+
+    def insert(self, index, text):
+        self.entry.insert(index, text)
+
+    def delete(self, a, b=None):
+        self.entry.delete(a, b)
+
+    def set(self, value: str):
+        self.entry.delete(0, "end")
+        self.entry.insert(0, value or "")
+
+    # popup
+    def _current(self):
+        import datetime as dt
+        try:
+            return dt.date.fromisoformat(self.entry.get().strip())
+        except ValueError:
+            return None
+
+    def open(self):
+        import calendar
+        import datetime as dt
+        if self.pop is not None:
+            self.close()
+            return
+        today, picked = dt.date.today(), self._current()
+        shown = {"y": (picked or today).year, "m": (picked or today).month}
+        pop = self.pop = tk.Toplevel(self)
+        pop.overrideredirect(True)
+        box = tk.Frame(pop, bg=cur("surface"), highlightthickness=1, highlightbackground=cur("rule"), bd=0)
+        box.pack()
+        head = tk.Frame(box, bg=cur("surface"))
+        head.pack(fill="x", padx=8, pady=(8, 4))
+        title = tk.Label(head, bg=cur("surface"), fg=cur("text_strong"), font=font(FONT_SIZE, "bold"))
+        grid = tk.Frame(box, bg=cur("surface"))
+        grid.pack(padx=8)
+
+        def nav(txt, step):
+            b = tk.Label(head, text=txt, bg=cur("surface"), fg=cur("muted"), font=font(FONT_SIZE + 3, "bold"),
+                         width=2, cursor="hand2")
+            b.bind("<Button-1>", lambda _e: go(step))
+            b.bind("<Enter>", lambda _e: b.configure(bg=cur("hover")))
+            b.bind("<Leave>", lambda _e: b.configure(bg=cur("surface")))
+            return b
+
+        def go(step):
+            m = shown["m"] - 1 + step
+            shown["y"] += m // 12
+            shown["m"] = m % 12 + 1
+            draw()
+
+        nav("‹", -1).pack(side="left")
+        title.pack(side="left", expand=True)
+        nav("›", 1).pack(side="right")
+
+        def choose(d):
+            self.set(d.isoformat())
+            self.close()
+
+        def draw():
+            for w in grid.winfo_children():
+                w.destroy()
+            title.configure(text=f"{calendar.month_name[shown['m']]} {shown['y']}")
+            for i, n in enumerate(("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")):
+                tk.Label(grid, text=n, width=3, bg=cur("surface"), fg=cur("muted"),
+                         font=font(FONT_SIZE - 2)).grid(row=0, column=i)
+            weeks = calendar.Calendar(0).monthdatescalendar(shown["y"], shown["m"])
+            for r, week in enumerate(weeks, start=1):
+                for i, d in enumerate(week):
+                    sel, now, other = d == picked, d == today, d.month != shown["m"]
+                    lab = tk.Label(grid, text=str(d.day), width=3, bg=cur("button") if sel else cur("surface"),
+                                   fg=cur("text_strong") if sel or now else cur("muted") if other else cur("text"),
+                                   font=font(FONT_SIZE - 1, "bold" if now else "normal"), cursor="hand2")
+                    lab.grid(row=r, column=i, pady=1)
+                    if not sel:
+                        lab.bind("<Enter>", lambda _e, l=lab: l.configure(bg=cur("hover")))
+                        lab.bind("<Leave>", lambda _e, l=lab: l.configure(bg=cur("surface")))
+                    lab.bind("<Button-1>", lambda _e, d=d: choose(d))
+
+        draw()
+        foot = tk.Frame(box, bg=cur("surface"))
+        foot.pack(fill="x", padx=8, pady=(4, 8))
+        for txt, fn in (("Today", lambda: choose(today)), ("Clear", lambda: (self.set(""), self.close()))):
+            b = tk.Label(foot, text=txt, bg=cur("surface"), fg=cur("link"), font=font(FONT_SIZE - 1), cursor="hand2")
+            b.bind("<Button-1>", lambda _e, fn=fn: fn())
+            b.pack(side="left" if txt == "Today" else "right")
+
+        pop.update_idletasks()
+        x = self.winfo_rootx() + self.winfo_width() - pop.winfo_reqwidth()
+        y = self.winfo_rooty() + self.winfo_height() + 2
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        if y + pop.winfo_reqheight() > sh:
+            y = self.winfo_rooty() - pop.winfo_reqheight() - 2
+        pop.geometry(f"+{max(0, min(x, sw - pop.winfo_reqwidth()))}+{max(0, y)}")
+        pop.bind("<Escape>", lambda _e: self.close())
+        self._outside = self.winfo_toplevel().bind("<Button-1>", self._click_away, add="+")   # undone in close()
+        pop.focus_set()
+
+    def _click_away(self, e):
+        if self.pop is not None and not str(e.widget).startswith(str(self.pop)) and e.widget is not self.btn._canvas \
+                and not str(e.widget).startswith(str(self.btn)):
+            self.close()
+
+    def close(self):
+        if self.pop is not None:
+            self.pop.destroy()
+            self.pop = None
+            try:
+                self.winfo_toplevel().unbind("<Button-1>", self._outside)
+            except tk.TclError:
+                pass
+
+
+def date_entry(master, placeholder: str = "YYYY-MM-DD") -> DateEntry:
+    return DateEntry(master, placeholder)
+
+
+def prompt(master, title: str, label_text: str = "Name", value: str = "", ok: str = "Save") -> str | None:
+    """Small modal asking for one line of text (add / rename). Returns the text, or None if cancelled.
+    Enter saves, Esc cancels; an empty answer shows an error instead of closing."""
+    dlg = modal(master, title)
+    result = {"v": None}
+    panel = Panel(dlg)
+    panel.pack(fill="both", expand=True, padx=GUTTER, pady=(GUTTER, 0))
+    f, ent, err = field(panel, label_text, lambda p: entry(p), required=True)
+    f.pack(fill="x", padx=14, pady=14)
+    ent.insert(0, value)
+
+    def done(_e=None):
+        if not ent.get().strip():
+            err("Type a name.")
+            return
+        result["v"] = ent.get().strip()
+        dlg.destroy()
+
+    bar = ctk.CTkFrame(dlg, fg_color="transparent", height=0)
+    bar.pack(anchor="e", padx=GUTTER, pady=GUTTER)
+    button(bar, "Cancel", dlg.destroy).pack(side="left", padx=(0, 6))
+    button(bar, ok, done).pack(side="left")
+    ent.bind("<Return>", done)
+    dlg.after(200, ent.focus_set)
+    run_modal(dlg, master, 360)
     return result["v"]

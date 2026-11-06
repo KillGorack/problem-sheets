@@ -130,6 +130,10 @@ class Store:
                         "WHERE severity_id IS NULL")
         self.db.execute("UPDATE problems SET severity_id=(SELECT id FROM severities ORDER BY sort_order LIMIT 1 OFFSET 1) "
                         "WHERE severity_id IS NULL")
+        # actions got a hand-set order (move up / down); older rows keep their creation order
+        if "sort_order" not in {r["name"] for r in self.db.execute("PRAGMA table_info(actions)")}:
+            self.db.execute("ALTER TABLE actions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("UPDATE actions SET sort_order=id")
         # older databases had four problem statuses; there are two now
         self.db.execute("UPDATE problems SET status='Open' WHERE status='In progress'")
         self.db.execute("UPDATE problems SET status='Closed' WHERE status='Resolved'")
@@ -375,7 +379,7 @@ class Store:
     """
 
     def actions(self, pid: int) -> list[dict]:
-        rows = self.db.execute(self._ACTION_SQL + " WHERE a.problem_id=? ORDER BY a.id", (pid,))
+        rows = self.db.execute(self._ACTION_SQL + " WHERE a.problem_id=? ORDER BY a.sort_order, a.id", (pid,))
         return [dict(r) for r in rows]
 
     def open_actions(self, project_id: int | None = None) -> list[dict]:
@@ -383,7 +387,7 @@ class Store:
         if project_id:
             sql += " AND p.project_id = ?"
             args.append(project_id)
-        return [dict(r) for r in self.db.execute(sql + " ORDER BY a.problem_id, a.id", args)]
+        return [dict(r) for r in self.db.execute(sql + " ORDER BY a.problem_id, a.sort_order, a.id", args)]
 
     def save_action(self, d: dict) -> int:
         cols = ("problem_id", "description", "owner_id", "due_date", "status", "done_date")
@@ -392,12 +396,30 @@ class Store:
                             [d[c] for c in cols] + [d["id"]])
             aid = d["id"]
         else:
-            cur = self.db.execute(f"INSERT INTO actions({', '.join(cols)}) VALUES ({','.join('?' * len(cols))})",
-                                  [d[c] for c in cols])
+            nxt = (self.db.execute("SELECT MAX(sort_order) FROM actions WHERE problem_id=?",
+                                   (d["problem_id"],)).fetchone()[0] or 0) + 1
+            cur = self.db.execute(f"INSERT INTO actions({', '.join(cols)}, sort_order) "
+                                  f"VALUES ({','.join('?' * len(cols))}, ?)", [d[c] for c in cols] + [nxt])
             aid = cur.lastrowid
         self.db.commit()
         self.touch(d["problem_id"])
         return aid
+
+    def move_action(self, aid: int, step: int) -> bool:
+        """Swap an action with its neighbour above (step -1) or below (+1). False at the end of the list."""
+        row = self.db.execute("SELECT problem_id FROM actions WHERE id=?", (aid,)).fetchone()
+        if not row:
+            return False
+        ids = [r["id"] for r in self.db.execute(
+            "SELECT id FROM actions WHERE problem_id=? ORDER BY sort_order, id", (row["problem_id"],))]
+        i, j = ids.index(aid), ids.index(aid) + step
+        if not 0 <= j < len(ids):
+            return False
+        ids[i], ids[j] = ids[j], ids[i]
+        self.db.executemany("UPDATE actions SET sort_order=? WHERE id=?", [(n + 1, x) for n, x in enumerate(ids)])
+        self.db.commit()
+        self.touch(row["problem_id"])
+        return True
 
     def delete_action(self, aid: int) -> None:
         row = self.db.execute("SELECT problem_id FROM actions WHERE id=?", (aid,)).fetchone()

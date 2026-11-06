@@ -61,11 +61,9 @@ class App(ctk.CTk):
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
 
-        # toolbar:  new, export | note | settings, theme
+        # toolbar:  export | note | settings, theme
         bar = self.bar = ui.Toolbar(self)
         bar.grid(row=1, column=0, sticky="ew", padx=GUTTER, pady=GUTTER)
-        bar.add(ui.icon_button(bar, "plus", lambda: self.guard(lambda: self.open_problem(None)),
-                               "New problem (Ctrl+N)"))
         bar.add(ui.icon_button(bar, "file-down", self.export_pdf, lambda: "Print this problem as PDF"
                                if self.detail is not None else "Export the list as PDF"))
         bar.stretch()
