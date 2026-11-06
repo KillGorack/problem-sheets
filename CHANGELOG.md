@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 - 2026-11-06  (tidy-up)
+- Actions: reorder with the arrows in each row (order shows in the sheet and the PDF, new `#` column); double-click
+  edits and sets the stage; Delete lives in the action form; date picker on the due date; Edit / Next stage / Remove buttons gone.
+- A + by the card title replaces the Add buttons (Actions, Pictures, Problems, and every Settings list).
+- Settings rearranged; Projects, Categories, People and Severity levels edit in place with a pencil and trash can per row.
+- Fixed: a bad date pushed the action form's buttons out of the window.
+- Existing databases upgrade themselves (actions get a sort order); data is untouched.
+
 ## 1.1.1 - 2026-11-04
 - `problem-sheets --install-menu` adds an applications-menu entry for pip/pipx installs (`--remove-menu` undoes it).
 - README: pipx install command with the repo address.

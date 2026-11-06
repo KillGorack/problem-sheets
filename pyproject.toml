@@ -16,7 +16,7 @@ problem-sheets = "main:main"
 
 [tool.setuptools]
 # Flat modules (the app grew as scripts). Fine inside pipx's private environment.
-py-modules = ["main", "views", "db", "pdf_export", "dave_theme", "version"]
+py-modules = ["main", "views", "db", "pdf_export", "dave_theme", "widgets", "version"]
 packages = ["icons"]                       # dave_theme looks for icons/ next to itself
 
 [tool.setuptools.package-data]
