@@ -1178,7 +1178,7 @@ class DateEntry(ctk.CTkFrame):
         def nav(txt, step):
             b = tk.Label(head, text=txt, bg=cur("surface"), fg=cur("muted"), font=font(FONT_SIZE + 3, "bold"),
                          width=2, cursor="hand2")
-            b.bind("<Button-1>", lambda _e: go(step))
+            b.bind("<ButtonRelease-1>", lambda _e: go(step))
             b.bind("<Enter>", lambda _e: b.configure(bg=cur("hover")))
             b.bind("<Leave>", lambda _e: b.configure(bg=cur("surface")))
             return b
@@ -1194,6 +1194,8 @@ class DateEntry(ctk.CTkFrame):
         nav("›", 1).pack(side="right")
 
         def choose(d):
+            # Picks act on mouse RELEASE: closing on press let the release fall through to whatever
+            # sat under the popup - in a dialog that could be the Save button (CTk buttons fire on release).
             self.set(d.isoformat())
             self.close()
 
@@ -1215,14 +1217,14 @@ class DateEntry(ctk.CTkFrame):
                     if not sel:
                         lab.bind("<Enter>", lambda _e, l=lab: l.configure(bg=cur("hover")))
                         lab.bind("<Leave>", lambda _e, l=lab: l.configure(bg=cur("surface")))
-                    lab.bind("<Button-1>", lambda _e, d=d: choose(d))
+                    lab.bind("<ButtonRelease-1>", lambda _e, d=d: choose(d))   # release: see choose()
 
         draw()
         foot = tk.Frame(box, bg=cur("surface"))
         foot.pack(fill="x", padx=8, pady=(4, 8))
         for txt, fn in (("Today", lambda: choose(today)), ("Clear", lambda: (self.set(""), self.close()))):
             b = tk.Label(foot, text=txt, bg=cur("surface"), fg=cur("link"), font=font(FONT_SIZE - 1), cursor="hand2")
-            b.bind("<Button-1>", lambda _e, fn=fn: fn())
+            b.bind("<ButtonRelease-1>", lambda _e, fn=fn: fn())
             b.pack(side="left" if txt == "Today" else "right")
 
         pop.update_idletasks()

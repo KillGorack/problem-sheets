@@ -152,6 +152,26 @@ def title_only(parent, text, icon=None):
     return top
 
 
+def single(fn):
+    """Let only one dialog open at a time. A dialog grabs the mouse a moment after it appears; until
+    then, quick extra clicks (a double-click on a row, a second click on a pencil) would open more."""
+    import functools
+
+    @functools.wraps(fn)
+    def run(*a, **kw):
+        if single.busy:
+            return None
+        single.busy = True
+        try:
+            return fn(*a, **kw)
+        finally:
+            single.busy = False
+    return run
+
+
+single.busy = False
+
+
 def danger(btn):
     btn.configure(text_color=C["error"])
     return btn
@@ -769,6 +789,7 @@ class DetailView(ctk.CTkFrame):
         self.app.note(f"Saved {db.number(self.pid)}", "success")
         return True
 
+    @single
     def delete(self):
         n = len(self.store.actions(self.pid))
         extra = f" and its {n} action{'s' if n != 1 else ''}" if n else ""
@@ -824,6 +845,7 @@ class DetailView(ctk.CTkFrame):
                               corner_radius=ui.RADIUS, command=lambda img=img: self.view_picture(img))
             b.grid(row=i // 9, column=i % 9, padx=(0, GAP), pady=(0, GAP))
 
+    @single
     def add_pictures(self):
         files = filedialog.askopenfilenames(
             parent=self.app, title="Add pictures", initialdir=remembered_dir(self.app, "last_pictures_dir"),
@@ -841,6 +863,7 @@ class DetailView(ctk.CTkFrame):
             self.refresh_pictures()
             self.app.note(f"Added {added} picture{'s' if added != 1 else ''}")
 
+    @single
     def view_picture(self, img):
         dlg = ui.modal(self.app, img["path"].name)
         image = ui.fit_image(img["path"], 860, 560)
@@ -895,12 +918,14 @@ class DetailView(ctk.CTkFrame):
             self.app.note("Select an action first.")
         return row
 
+    @single
     def add_action(self):
         a = action_dialog(self.app, None, self.pid, self.people, self._get("champion"))
         if isinstance(a, dict):
             self.store.save_action(a)
             self.refresh_actions()
 
+    @single
     def edit_action(self):
         row = self._selected()
         if row:
@@ -978,6 +1003,7 @@ class SettingsView(ctk.CTkFrame):
         def lookup(rid):
             return next(x for x in store.severities() if x["id"] == rid)
 
+        @single
         def add_level():
             got = widgets.severity_dialog(app, "Add severity level")
             if got:
@@ -987,6 +1013,7 @@ class SettingsView(ctk.CTkFrame):
                     app.note(f"'{got[0]}' already exists.", "error")
                 refresh()
 
+        @single
         def edit(rid):
             cur = lookup(rid)
             got = widgets.severity_dialog(app, "Edit severity level", cur["name"], cur["color"])
@@ -1001,6 +1028,7 @@ class SettingsView(ctk.CTkFrame):
             store.move_severity(rid, direction)
             refresh()
 
+        @single
         def remove(rid):
             cur = lookup(rid)
             if ui.dialog(app, f"Delete '{cur['name']}'?", "It will no longer be offered.",
@@ -1045,17 +1073,20 @@ class SettingsView(ctk.CTkFrame):
                 return
             refresh()
 
+        @single
         def add():
             got = widgets.project_dialog(app, "Add project")
             if got:
                 save(got)
 
+        @single
         def edit(pid):
             cur = next(p for p in store.projects() if p["id"] == pid)
             got = widgets.project_dialog(app, "Edit project", cur["name"], cur["meeting_when"], cur["meeting_where"])
             if got and got != (cur["name"], cur["meeting_when"], cur["meeting_where"]):
                 save(got, pid)
 
+        @single
         def remove(pid):
             cur = next(p["name"] for p in store.projects() if p["id"] == pid)
             if ui.dialog(app, f"Delete '{cur}'?", "It will no longer be offered in lists.",
@@ -1110,18 +1141,21 @@ class SettingsView(ctk.CTkFrame):
                 return
             refresh()
 
+        @single
         def add():
             if cat_id():
                 name = ui.prompt(app, f"Add sub-category to {pick.get()}")
                 if name:
                     save(name)
 
+        @single
         def rename(sid):
             cur = current(sid)
             name = ui.prompt(app, "Rename sub-category", value=cur)
             if name and name != cur:
                 save(name, sid)
 
+        @single
         def remove(sid):
             cur = current(sid)
             if ui.dialog(app, f"Delete '{cur}'?", "It will no longer be offered in lists.",
@@ -1169,17 +1203,20 @@ class SettingsView(ctk.CTkFrame):
                 return
             refresh()
 
+        @single
         def add():
             name = ui.prompt(app, f"Add {noun}")
             if name:
                 save(name)
 
+        @single
         def rename(rid):
             cur = next(i["name"] for i in store.items(table) if i["id"] == rid)
             name = ui.prompt(app, f"Rename {noun}", value=cur)
             if name and name != cur:
                 save(name, rid)
 
+        @single
         def remove(rid):
             cur = next(i["name"] for i in store.items(table) if i["id"] == rid)
             if ui.dialog(app, f"Delete '{cur}'?", "It will no longer be offered in lists.",
