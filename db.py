@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -26,9 +27,16 @@ CREATE TABLE IF NOT EXISTS severities (
     color TEXT NOT NULL DEFAULT '#888888',
     sort_order INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS projects   (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS projects   (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                                         meeting_when TEXT NOT NULL DEFAULT '', meeting_where TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS people     (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS subcategories (
+    id INTEGER PRIMARY KEY,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE RESTRICT,
+    name TEXT NOT NULL COLLATE NOCASE,
+    UNIQUE(category_id, name)
+);
 CREATE TABLE IF NOT EXISTS problems (
     id INTEGER PRIMARY KEY,
     project_id INTEGER REFERENCES projects(id) ON DELETE RESTRICT,
@@ -38,6 +46,7 @@ CREATE TABLE IF NOT EXISTS problems (
     description TEXT NOT NULL DEFAULT '',
     root_cause TEXT NOT NULL DEFAULT '',
     category_id INTEGER REFERENCES categories(id) ON DELETE RESTRICT,
+    subcategory_id INTEGER REFERENCES subcategories(id) ON DELETE RESTRICT,
     champion_id INTEGER REFERENCES people(id) ON DELETE RESTRICT,
     status TEXT NOT NULL DEFAULT 'Open',
     reported_date TEXT NOT NULL,     -- legacy, unused: created_at is the creation date
@@ -64,6 +73,30 @@ CREATE TABLE IF NOT EXISTS actions (
 """
 
 
+NO_CATEGORY = "(no category)"
+
+
+def protocol_groups(rows: list[dict]) -> list[tuple]:
+    """Problems grouped for the Protocol (screen and PDF):
+        [(project, [(category, [problems with no sub-category], [(sub-category, [problems])])])]
+    Problems without a sub-category sit directly under their category; problems without a category go
+    under NO_CATEGORY, last. Names sort alphabetically, problems by number."""
+    tree: dict = {}
+    for p in rows:
+        tree.setdefault(p["project"] or "", {}).setdefault(p["category"] or NO_CATEGORY, {}) \
+            .setdefault(p["subcategory"] or "", []).append(p)
+    by_id = lambda ps: sorted(ps, key=lambda r: r["id"])            # noqa: E731
+    out = []
+    for proj in sorted(tree, key=str.lower):
+        cats = []
+        for cat in sorted(tree[proj], key=lambda c: (c == NO_CATEGORY, c.lower())):
+            subs = tree[proj][cat]
+            cats.append((cat, by_id(subs.get("", [])),
+                         [(sub, by_id(subs[sub])) for sub in sorted((k for k in subs if k), key=str.lower)]))
+        out.append((proj, cats))
+    return out
+
+
 class InUse(Exception):
     """A list entry can't be deleted because records still point at it."""
 
@@ -83,7 +116,7 @@ def _now() -> str:
 
 
 def number(pid: int) -> str:
-    return f"PS-{pid:04d}"
+    return f"TS-{pid:04d}"
 
 
 def valid_date(text: str) -> bool:
@@ -134,12 +167,37 @@ class Store:
         if "sort_order" not in {r["name"] for r in self.db.execute("PRAGMA table_info(actions)")}:
             self.db.execute("ALTER TABLE actions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
             self.db.execute("UPDATE actions SET sort_order=id")
+        # projects got a meeting time and place (shown on the Protocol)
+        pcols = {r["name"] for r in self.db.execute("PRAGMA table_info(projects)")}
+        for col in ("meeting_when", "meeting_where"):
+            if col not in pcols:
+                self.db.execute(f"ALTER TABLE projects ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+        # sub-categories came later: add the column, left empty
+        if "subcategory_id" not in cols:
+            self.db.execute("ALTER TABLE problems ADD COLUMN subcategory_id INTEGER "
+                            "REFERENCES subcategories(id) ON DELETE RESTRICT")
         # older databases had four problem statuses; there are two now
         self.db.execute("UPDATE problems SET status='Open' WHERE status='In progress'")
         self.db.execute("UPDATE problems SET status='Closed' WHERE status='Resolved'")
+        self._ps_to_ts()
         if not self.db.execute("SELECT 1 FROM categories").fetchone():
             self.db.executemany("INSERT INTO categories(name) VALUES (?)", [(c,) for c in DEFAULT_CATEGORIES])
         self.db.commit()
+
+    def _ps_to_ts(self) -> None:
+        """Numbers were PS-0003 (problem sheet), now TS-0003 (topic sheet). Rename the old folders and
+        the picture paths that point into them. A folder is only renamed when no TS- folder of that
+        number exists yet; anything you put in the folder moves with it, untouched."""
+        if self.image_dir.is_dir():
+            for old in self.image_dir.iterdir():
+                if old.is_dir() and re.fullmatch(r"PS-\d{4,}", old.name):
+                    new = old.with_name("TS-" + old.name[3:])
+                    if not new.exists():
+                        old.rename(new)
+        for r in self.db.execute("SELECT id, file FROM images WHERE file LIKE 'PS-%'").fetchall():
+            new = "TS-" + r["file"][3:]
+            if (self.image_dir / new).exists() or not (self.image_dir / r["file"]).exists():
+                self.db.execute("UPDATE images SET file=? WHERE id=?", (new, r["id"]))
 
     # ---- pick lists --------------------------------------------------
     def items(self, table: str) -> list[dict]:
@@ -161,6 +219,47 @@ class Store:
         assert table in LISTS
         try:
             self.db.execute(f"DELETE FROM {table} WHERE id=?", (item_id,))
+            self.db.commit()
+        except sqlite3.IntegrityError as e:
+            self.db.rollback()
+            raise InUse() from e
+
+    # ---- projects: name plus where and when the team meets ------------
+    def projects(self) -> list[dict]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT id, name, meeting_when, meeting_where FROM projects ORDER BY name")]
+
+    def save_project(self, name: str, when: str, where: str, pid: int | None = None) -> int:
+        if pid:
+            self.db.execute("UPDATE projects SET name=?, meeting_when=?, meeting_where=? WHERE id=?",
+                            (name.strip(), when.strip(), where.strip(), pid))
+        else:
+            pid = self.db.execute("INSERT INTO projects(name, meeting_when, meeting_where) VALUES (?,?,?)",
+                                  (name.strip(), when.strip(), where.strip())).lastrowid
+        self.db.commit()
+        return pid
+
+    # ---- sub-categories (each belongs to one category) ----------------
+    def subcategories(self, category_id: int | None = None) -> list[dict]:
+        sql, args = ("SELECT s.id, s.category_id, s.name, c.name AS category FROM subcategories s "
+                     "JOIN categories c ON c.id = s.category_id"), []
+        if category_id is not None:
+            sql += " WHERE s.category_id = ?"
+            args.append(category_id)
+        return [dict(r) for r in self.db.execute(sql + " ORDER BY c.name, s.name", args)]
+
+    def add_subcategory(self, category_id: int, name: str) -> int:
+        cur = self.db.execute("INSERT INTO subcategories(category_id, name) VALUES (?,?)", (category_id, name.strip()))
+        self.db.commit()
+        return cur.lastrowid
+
+    def rename_subcategory(self, sid: int, name: str) -> None:
+        self.db.execute("UPDATE subcategories SET name=? WHERE id=?", (name.strip(), sid))
+        self.db.commit()
+
+    def delete_subcategory(self, sid: int) -> None:
+        try:
+            self.db.execute("DELETE FROM subcategories WHERE id=?", (sid,))
             self.db.commit()
         except sqlite3.IntegrityError as e:
             self.db.rollback()
@@ -213,15 +312,16 @@ class Store:
 
     # ---- problems ----------------------------------------------------
     _PROBLEM_SQL = """
-        SELECT p.id, p.project_id, p.title, p.severity_id, p.description, p.root_cause, p.category_id,
+        SELECT p.id, p.project_id, p.title, p.severity_id, p.description, p.root_cause, p.category_id, p.subcategory_id,
                p.champion_id, p.status, p.closed_date, p.created_at, p.updated_at,
                sv.name AS severity, sv.color AS severity_color, sv.sort_order AS severity_rank,
-               pr.name AS project, c.name AS category, h.name AS champion,
+               pr.name AS project, c.name AS category, sc.name AS subcategory, h.name AS champion,
                (SELECT COUNT(*) FROM actions a WHERE a.problem_id = p.id AND a.status <> 'Verified') AS open_actions
         FROM problems p
         LEFT JOIN severities sv ON sv.id = p.severity_id
         LEFT JOIN projects pr ON pr.id = p.project_id
         LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN subcategories sc ON sc.id = p.subcategory_id
         LEFT JOIN people h ON h.id = p.champion_id
     """
 
@@ -233,8 +333,9 @@ class Store:
             args.append(project_id)
         for word in search.split():
             sql += (" AND (p.title LIKE ? OR p.description LIKE ? OR p.root_cause LIKE ?"
-                    " OR c.name LIKE ? OR h.name LIKE ? OR pr.name LIKE ? OR printf('PS-%04d', p.id) LIKE ?)")
-            args += [f"%{word}%"] * 7
+                    " OR c.name LIKE ? OR sc.name LIKE ? OR h.name LIKE ? OR pr.name LIKE ?"
+                    " OR printf('TS-%04d', p.id) LIKE ?)")
+            args += [f"%{word}%"] * 8
         if statuses:
             sql += f" AND p.status IN ({','.join('?' * len(statuses))})"
             args += list(statuses)
@@ -257,8 +358,9 @@ class Store:
 
     def save_problem(self, d: dict) -> int:
         """Insert (no 'id') or update. created_at is set once; updated_at on every save."""
-        cols = ("project_id", "title", "severity_id", "description", "root_cause", "category_id", "champion_id",
-                "status", "closed_date")
+        cols = ("project_id", "title", "severity_id", "description", "root_cause", "category_id", "subcategory_id",
+                "champion_id", "status", "closed_date")
+        d = {"subcategory_id": None, **d}
         now = _now()
         if d.get("id"):
             self.db.execute(f"UPDATE problems SET {', '.join(c + '=?' for c in cols)}, updated_at=? WHERE id=?",
@@ -297,7 +399,7 @@ class Store:
             pass
 
     def problem_dir(self, pid: int, create: bool = False) -> Path:
-        """<files folder>/PS-0003 - yours to fill with evidence, analyses, anything. The app only
+        """<files folder>/TS-0003 - yours to fill with evidence, analyses, anything. The app only
         keeps its own pictures in the 'pictures' sub-folder."""
         folder = self.image_dir / number(pid)
         if create:
@@ -323,7 +425,7 @@ class Store:
         return {r["problem_id"]: self.image_dir / r["file"] for r in rows}
 
     def add_image(self, pid: int, source: Path | str) -> int:
-        """Copy a picture into <pictures folder>/PS-0003/ and attach it to the problem."""
+        """Copy a picture into <pictures folder>/TS-0003/ and attach it to the problem."""
         source = Path(source)
         folder = self.problem_dir(pid) / "pictures"
         folder.mkdir(parents=True, exist_ok=True)
@@ -353,7 +455,7 @@ class Store:
     def problem_folders(self) -> list[Path]:
         if not self.image_dir.exists():
             return []
-        return sorted(p for p in self.image_dir.iterdir() if p.is_dir() and p.name.startswith("PS-"))
+        return sorted(p for p in self.image_dir.iterdir() if p.is_dir() and p.name.startswith("TS-"))
 
     def set_image_dir(self, new_dir: Path | str, move: bool = True) -> None:
         """Point at a new files folder, moving every problem folder (pictures and your own files)."""
@@ -432,49 +534,114 @@ class Store:
     def seed_demo(self) -> None:
         if self.db.execute("SELECT 1 FROM problems").fetchone():
             return
-        people = {n: self.add_item("people", n) for n in ("Alex Rivera", "Sam Okafor", "Jordan Lee", "Priya Nair")}
+        people = {n: self.add_item("people", n) for n in
+                  ("Alex Rivera", "Sam Okafor", "Jordan Lee", "Priya Nair", "Maria Santos", "Tom Becker")}
         sev = {r["name"]: r["id"] for r in self.severities()}
         first = self.items("projects")[0]["id"]
         self.rename_item("projects", first, "Production")
-        projects = {"Production": first, "Logistics": self.add_item("projects", "Logistics")}
+        self.save_project("Production", "Mondays at 10:00", "Room 111", first)
+        projects = {"Production": first,
+                    "Logistics": self.save_project("Logistics", "Wednesdays at 14:00", "Teams"),
+                    "Facilities": self.save_project("Facilities", "Every other Friday at 09:00", "Room 204")}
         cats = {c["name"]: c["id"] for c in self.items("categories")}
+        subs = {}
+        for cat, names in (("Quality", ("Leak", "Documentation", "Dimensional")),
+                           ("Safety", ("Near-miss", "Ergonomics", "PPE")),
+                           ("Process", ("Scrap", "Cycle time")),
+                           ("Equipment", ("Breakdown", "Preventive maintenance")),
+                           ("Supplier", ("Delivery", "Incoming quality"))):
+            for n in names:
+                subs[(cat, n)] = self.add_subcategory(cats[cat], n)
         d = lambda n: (dt.date.today() + dt.timedelta(days=n)).isoformat()   # noqa: E731
+        A, S, J, P, M, T = "Alex Rivera", "Sam Okafor", "Jordan Lee", "Priya Nair", "Maria Santos", "Tom Becker"
+        # project, title, severity, category, sub-category ("" = none), champion, status, created (days ago),
+        # description, root cause, [(action, who, due in days, stage)]
         rows = [
-            ("Seal leaks on pump housing", "High", "Customers report oil weeping at the pump housing seal after about 200 hours.",
-             "Seal compound hardens above 90 C; cure step runs too hot.", "Quality", "Alex Rivera", "Open", d(-20), d(-2),
-             [("Measure oven temperature profile", "Sam Okafor", d(-8), "Done"),
-              ("Trial lower cure temperature on 20 units", "Alex Rivera", d(-1), "Implemented"),
-              ("Update work instruction WI-114", "Priya Nair", d(6), "Planning")]),
-            ("Forklift near-miss at dock 3", "High", "Forklift and pedestrian came within a meter at the dock 3 crossing.",
-             "", "Safety", "Jordan Lee", "Open", d(-5), d(9),
-             [("Install convex mirror at crossing", "Jordan Lee", d(5), "Planning")]),
-            ("Late deliveries from fastener supplier", "Medium", "Three of the last five orders arrived 4+ days late.",
-             "Supplier changed shipping carrier without notice.", "Supplier", "Priya Nair", "Open", d(-30), d(14),
-             [("Request delivery plan from supplier", "Priya Nair", d(-10), "Done"),
-              ("Qualify second source", "Sam Okafor", d(14), "Open")]),
-            ("Label printer jams on night shift", "Low", "Printer jams about twice a shift on roll changes.",
-             "Roll core diameter differs between vendors.", "Equipment", "Sam Okafor", "Closed", d(-45), d(-30),
-             [("Standardize on 76 mm core rolls", "Sam Okafor", d(-35), "Done")]),
-            ("Scrap rate up on line 2", "Medium", "Scrap rose from 2% to 5% over two weeks.",
-             "", "Process", "Alex Rivera", "Open", d(-3), d(21), []),
-            ("Calibration records incomplete", "Low", "Six gauges missing 2023 calibration entries.",
-             "Records kept in two places.", "Quality", "Jordan Lee", "Closed", d(-90), d(-60),
-             [("Merge calibration logs", "Jordan Lee", d(-62), "Done")]),
+            ("Production", "Seal leaks on pump housing", "High", "Quality", "Leak", A, "Open", 20,
+             "Customers report oil weeping at the pump housing seal after about 200 hours.",
+             "Seal compound hardens above 90 C; cure step runs too hot.",
+             [("Measure oven temperature profile", S, -8, "Verified"),
+              ("Trial lower cure temperature on 20 units", A, -1, "Implemented"),
+              ("Update work instruction WI-114", P, 6, "Planning")]),
+            ("Production", "Scrap rate up on line 2", "Medium", "Process", "Scrap", A, "Open", 3,
+             "Scrap rose from 2% to 5% over two weeks.", "", []),
+            ("Production", "Label printer jams on night shift", "Low", "Equipment", "Breakdown", S, "Closed", 45,
+             "Printer jams about twice a shift on roll changes.", "Roll core diameter differs between vendors.",
+             [("Standardize on 76 mm core rolls", S, -35, "Verified")]),
+            ("Production", "Calibration records incomplete", "Low", "Quality", "Documentation", J, "Closed", 90,
+             "Six gauges missing 2023 calibration entries.", "Records kept in two places.",
+             [("Merge calibration logs", J, -62, "Verified")]),
+            ("Production", "Bore diameter drifting on CNC 4", "High", "Quality", "Dimensional", M, "Open", 12,
+             "Bore measured 0.03 mm over tolerance on 8 of the last 50 parts.", "",
+             [("100% inspect bores until fixed", M, -5, "Implemented"),
+              ("Check spindle runout", T, 2, "Defined"),
+              ("Review tool-wear offsets", M, 7, "Planning")]),
+            ("Production", "Customer complaint: scratched covers", "Medium", "Quality", "", P, "Open", 6,
+             "Two customers returned covers with surface scratches.", "",
+             [("Inspect packaging line for contact points", P, 3, "Defined"),
+              ("Add foam separators to packaging", J, 10, "Planning")]),
+            ("Production", "Wrong revision drawing at station 7", "Medium", "Quality", "", J, "Open", 4,
+             "Operator was building to revision C; current is D.", "Printed copies not withdrawn after release.",
+             [("Withdraw old printed drawings", J, -1, "Verified"),
+              ("Switch station 7 to screen-only drawings", S, 14, "Planning")]),
+            ("Production", "Changeover takes 90 minutes on press 3", "Low", "Process", "Cycle time", T, "Open", 25,
+             "Target changeover is 45 minutes.", "",
+             [("Video a changeover and list steps", T, -10, "Verified"),
+              ("Move tool prep offline", T, 9, "Defined"),
+              ("Add quick clamps to die", S, 20, "Planning")]),
+            ("Production", "Operators lifting 25 kg housings", "Medium", "Safety", "Ergonomics", A, "Open", 15,
+             "Housings lifted by hand from pallet to fixture, about 60 times per shift.", "",
+             [("Request quote for vacuum lifter", A, -3, "Defined"),
+              ("Interim: two-person lift rule", A, -12, "Verified")]),
+            ("Production", "Hydraulic leak on press 1", "High", "Equipment", "Breakdown", T, "Open", 2,
+             "Oil on floor under press 1 each morning.", "", [("Replace main cylinder seals", T, 1, "Planning")]),
+            ("Production", "Lubrication schedule missed", "Low", "Equipment", "Preventive maintenance", S, "Open", 30,
+             "PM checklist shows 4 missed lubrication tasks in October.", "No backup when the technician is off.",
+             [("Assign backup technician", S, -15, "Verified"),
+              ("Add PM tasks to the shift board", P, -2, "Implemented")]),
+            ("Logistics", "Forklift near-miss at dock 3", "High", "Safety", "Near-miss", J, "Open", 5,
+             "Forklift and pedestrian came within a meter at the dock 3 crossing.", "",
+             [("Install convex mirror at crossing", J, 5, "Planning"),
+              ("Paint pedestrian walkway", M, 12, "Planning")]),
+            ("Logistics", "Late deliveries from fastener supplier", "Medium", "Supplier", "Delivery", P, "Open", 30,
+             "Three of the last five orders arrived 4+ days late.", "Supplier changed shipping carrier without notice.",
+             [("Request delivery plan from supplier", P, -10, "Verified"),
+              ("Qualify second source", S, 14, "Defined")]),
+            ("Logistics", "Bolts arriving with wrong coating", "Medium", "Supplier", "Incoming quality", P, "Open", 9,
+             "Zinc-plated bolts received instead of zinc-flake.", "",
+             [("Quarantine affected lots", P, -8, "Verified"),
+              ("Raise supplier corrective action request", P, 4, "Defined")]),
+            ("Logistics", "Pallets stacked above rack limit", "Low", "Safety", "", M, "Open", 7,
+             "Rack labels show 3 high; pallets found 4 high in aisle C.", "",
+             [("Remind team at shift meeting", M, -4, "Verified"),
+              ("Add height marks on rack uprights", T, 6, "Planning")]),
+            ("Logistics", "Stock count differences in aisle B", "Low", "Process", "", J, "Open", 18,
+             "Cycle counts off by 2-5% on small parts.", "", [("Re-label bins in aisle B", J, -2, "Defined")]),
+            ("Logistics", "Truck waiting times over 2 hours", "Medium", "", "", A, "Open", 11,
+             "Drivers report long waits at the gate on Mondays.", "", [("Introduce dock booking slots", A, 15, "Planning")]),
+            ("Facilities", "Roof leak above warehouse", "High", "Equipment", "", T, "Open", 8,
+             "Water dripping near rack row 12 during rain.", "",
+             [("Cover affected racks", T, -7, "Verified"), ("Get roofing contractor quote", M, 3, "Defined")]),
+            ("Facilities", "Missing safety glasses at entrance", "Low", "Safety", "PPE", M, "Closed", 40,
+             "Visitor glasses dispenser often empty.", "No one owned refilling it.",
+             [("Add dispenser to the daily 5S round", M, -30, "Verified")]),
+            ("Facilities", "Compressed air leaks", "Medium", "", "", S, "Open", 22,
+             "Compressor runs at night with production stopped.", "",
+             [("Ultrasonic leak survey", S, -6, "Implemented"), ("Fix tagged leaks", T, 8, "Planning")]),
         ]
-        for title, sevname, desc, rc, cat, champ, status, rep, due, acts in rows:
-            proj = "Logistics" if title.startswith(("Forklift", "Late deliveries")) else "Production"
-            pid = self.save_problem(dict(project_id=projects[proj], title=title, severity_id=sev[sevname], description=desc, root_cause=rc,
-                                         category_id=cats[cat], champion_id=people[champ], status=status,
-                                         closed_date=today() if status == "Closed" else "",
-                                         created_at=f"{rep}T09:00:00"))
+        for proj, title, sevname, cat, sub, champ, status, ago, desc, rc, acts in rows:
+            created = (dt.date.today() - dt.timedelta(days=ago)).isoformat()
+            pid = self.save_problem(dict(project_id=projects[proj], title=title, severity_id=sev[sevname],
+                                         description=desc, root_cause=rc, category_id=cats.get(cat),
+                                         subcategory_id=subs.get((cat, sub)), champion_id=people[champ],
+                                         status=status, closed_date=today() if status == "Closed" else "",
+                                         created_at=f"{created}T09:00:00"))
             self._demo_pictures(pid, title)
-            stage = {"Done": "Verified", "Open": "Defined"}
-            for text, owner, due_a, st in acts:
-                st = stage.get(st, st)
-                self.save_action(dict(problem_id=pid, description=text, owner_id=people[owner], due_date=due_a,
-                                      status=st, done_date=today() if st == "Verified" else ""))
+            for text, owner, due_in, st in acts:
+                self.save_action(dict(problem_id=pid, description=text, owner_id=people[owner], due_date=d(due_in),
+                                      status=st, done_date=today() if st == ACTION_DONE else ""))
             # make "updated" look lived-in: a few days after creation, never in the future
-            upd = min(dt.date.today(), dt.date.fromisoformat(rep) + dt.timedelta(days=4 + pid * 3))
+            upd = min(dt.date.today(), dt.date.fromisoformat(created) + dt.timedelta(days=2 + pid % 5))
             self.db.execute("UPDATE problems SET updated_at=? WHERE id=?", (f"{upd.isoformat()}T16:30:00", pid))
             self.db.commit()
 

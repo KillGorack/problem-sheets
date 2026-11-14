@@ -51,21 +51,23 @@ class App(ctk.CTk):
             pass
         ui.install_wheel(self)
         self.detail = None
-        self.current = "Problems"
+        self.current = "Topics"
+        self.section = "Topics"         # the left-bar section last shown
         self.project = None            # the Project the lists are filtered to (None = all projects)
 
-        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        self.sidebar = views.Sidebar(self, self)
         self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.grid(row=0, column=0, sticky="nsew", padx=(GUTTER, 0), pady=(GUTTER, 0))   # pages keep the right GUTTER themselves
+        self.container.grid(row=0, column=1, sticky="nsew", padx=(GUTTER, 0), pady=(GUTTER, 0))   # pages keep the right GUTTER themselves
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
 
-        # toolbar:  export | note | settings, theme
+        # toolbar:  left bar | note | settings, theme
         bar = self.bar = ui.Toolbar(self)
-        bar.grid(row=1, column=0, sticky="ew", padx=GUTTER, pady=GUTTER)
-        bar.add(ui.icon_button(bar, "file-down", self.export_pdf, lambda: "Print this problem as PDF"
-                               if self.detail is not None else "Export the list as PDF"))
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=GUTTER, pady=GUTTER)
+        bar.add(ui.icon_button(bar, "panel-left", self.toggle_sidebar, "Show or hide the left bar"))
+        bar.divider()
         bar.stretch()
         bar.divider()
         self.settings_btn = ui.icon_button(bar, "settings", self.toggle_settings, "Settings (Ctrl+,)")
@@ -74,9 +76,11 @@ class App(ctk.CTk):
                                         lambda: "Light theme" if self.mode == "dark" else "Dark theme")
         bar.add(self.theme_btn, last=True)
 
+        self.set_sidebar(self.settings.get("sidebar", True))
         self.build_pages()
         self.bind("<Control-n>", lambda _e: self.guard(lambda: self.open_problem(None)))
         self.bind("<Control-f>", lambda _e: self.focus_search())
+        self.bind("<Control-s>", lambda _e: self.detail.save() if self.detail is not None else None)
         self.bind("<Control-comma>", lambda _e: self.toggle_settings())
         self.bind("<Escape>", lambda _e: self.escape())
         for key, step in (("plus", 1), ("equal", 1), ("KP_Add", 1), ("minus", -1),
@@ -91,11 +95,12 @@ class App(ctk.CTk):
             w.destroy()
         self.detail = None
         self.pages = {}
-        for name, cls in (("Problems", views.ProblemsView), ("Settings", views.SettingsView)):
+        for name, cls in (("Topics", views.ProblemsView), ("Protocol", views.ProtocolView),
+                          ("Agenda", views.AgendaView), ("Settings", views.SettingsView)):
             page = cls(self, self.container)
             page.grid(row=0, column=0, sticky="nsew")
             self.pages[name] = page
-        self.show(self.current if self.current in self.pages else "Problems")
+        self.show(self.current if self.current in self.pages else "Topics")
 
     # ---- navigation --------------------------------------------------
     def show(self, name: str) -> None:
@@ -103,14 +108,28 @@ class App(ctk.CTk):
             self.detail.destroy()
             self.detail = None
         self.current = name
+        if name != "Settings":
+            self.section = name            # where Settings / Esc return to
+        self.sidebar.mark(name)
         page = self.pages[name]
         if hasattr(page, "refresh"):
             page.refresh()
         page.tkraise()
 
+    def toggle_sidebar(self) -> None:
+        self.set_sidebar(not self.sidebar.winfo_ismapped())
+        self.save({"sidebar": bool(self.sidebar.winfo_ismapped())})
+
+    def set_sidebar(self, show: bool) -> None:
+        if show:
+            self.sidebar.grid(row=0, column=0, sticky="ns", padx=(GUTTER, 0), pady=(GUTTER, 0))
+        else:
+            self.sidebar.grid_remove()
+        self.update_idletasks()
+
     def toggle_settings(self) -> None:
         if self.current == "Settings" and self.detail is None:
-            self.guard(lambda: self.show("Problems"))
+            self.guard(lambda: self.show(self.section))
         else:
             self.guard(lambda: self.show("Settings"))
 
@@ -127,33 +146,25 @@ class App(ctk.CTk):
             go()
 
     def close_detail(self) -> None:
-        self.show("Problems")
+        self.show("Topics")
 
     def escape(self) -> None:
         if self.detail is not None:
             self.guard(self.close_detail)
         elif self.current == "Settings":
-            self.show("Problems")
+            self.show(self.section)
 
     def focus_search(self) -> None:
-        if self.detail is None and self.current == "Problems":
-            self.pages["Problems"].search.focus_set()
+        if self.detail is None and self.current == "Topics":
+            self.pages["Topics"].search.focus_set()
 
     def guard(self, proceed) -> None:
         """Run proceed(), but first ask if the open problem has unsaved changes."""
         if self.detail is not None and self.detail.dirty():
-            if ui.dialog(self, "Discard changes?", "This problem has unsaved changes.",
+            if ui.dialog(self, "Discard changes?", "This topic has unsaved changes.",
                          ("Keep editing", "Discard"), danger=True) != "Discard":
                 return
         proceed()
-
-    def export_pdf(self) -> None:
-        if self.detail is not None:
-            self.detail.print_pdf()
-        elif self.current == "Problems":
-            self.pages["Problems"].export()
-        else:
-            self.note("Open the Problems list or a problem first.")
 
     # ---- feedback ----------------------------------------------------
     def note(self, text: str, tone: str = "muted") -> None:
@@ -178,7 +189,7 @@ class App(ctk.CTk):
 
     def zoom(self, step: int) -> None:
         if self.detail is not None and self.detail.dirty():
-            self.note("Save the problem before changing the text size.")
+            self.note("Save the topic before changing the text size.")
             return
         size = ui.FONT_SIZE + step if step else 13
         size = max(ui.FONT_MIN, min(ui.FONT_MAX, size))
@@ -198,19 +209,19 @@ class App(ctk.CTk):
 
     def close(self) -> None:
         if self.detail is not None and self.detail.dirty():
-            if ui.dialog(self, "Discard changes?", "This problem has unsaved changes.",
+            if ui.dialog(self, "Discard changes?", "This topic has unsaved changes.",
                          ("Keep editing", "Discard"), danger=True) != "Discard":
                 return
         self.save({"geometry": self.geometry()})
         self.destroy()
 
     def choose_image_dir(self) -> None:
-        new = filedialog.askdirectory(parent=self, title="Problem files folder", initialdir=str(self.store.image_dir),
+        new = filedialog.askdirectory(parent=self, title="Topic files folder", initialdir=str(self.store.image_dir),
                                       mustexist=False)
         if not new or Path(new) == self.store.image_dir:
             return
         n = len(self.store.problem_folders())
-        if n and ui.dialog(self, "Move problem folders?", f"Move the {n} existing problem folder"
+        if n and ui.dialog(self, "Move topic folders?", f"Move the {n} existing topic folder"
                            f"{'s' if n != 1 else ''} (pictures and any files you added) to the new folder?",
                            ("Cancel", "Move folders")) != "Move folders":
             return
@@ -289,7 +300,8 @@ def selftest() -> int:
 
     import pdf_export
     problems = []
-    for name in ("settings", "plus", "trash-2", "sun", "moon", "file-down"):
+    for name in ("settings", "plus", "trash-2", "sun", "moon", "file-down", "folder-open", "save", "undo-2",
+                 "image-plus", "panel-left", "clipboard-list", "scroll-text", "calendar"):
         if not (ui.ICON_DIR / f"{name}.png").exists():
             problems.append(f"missing icon: {name}")
     if not app_icon().exists():
@@ -326,8 +338,8 @@ def main() -> None:
     ap.add_argument("--theme", choices=MODES)
     ap.add_argument("--demo", action="store_true", help="use a separate demo database with sample data")
     ap.add_argument("--db", help="database file (default: your data folder)")
-    ap.add_argument("--page", choices=("Problems", "Settings"))
-    ap.add_argument("--open", type=int, metavar="ID", help="open this problem on start")
+    ap.add_argument("--page", choices=("Topics", "Protocol", "Agenda", "Settings"))
+    ap.add_argument("--open", type=int, metavar="ID", help="open this topic on start")
     a = ap.parse_args()
     if a.selftest:
         sys.exit(selftest())
